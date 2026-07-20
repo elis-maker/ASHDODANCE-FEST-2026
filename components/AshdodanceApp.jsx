@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo, useRef, useEffect } from "react";
-import { Heart, Calendar, MapPin, X, Building2, Clock, Share2, Zap, RotateCcw, Pencil, Info } from "lucide-react";
+import { Heart, Calendar, MapPin, X, Building2, Clock, Share2, Zap, Pencil, Info, Search, Type } from "lucide-react";
 
 const STORAGE_KEY_SAVED = "ashdodance2026:saved";
 const STORAGE_KEY_NOTES = "ashdodance2026:notes";
@@ -19,6 +19,27 @@ const DAY_META = {
 
 const DATES = ["2026-07-27", "2026-07-28", "2026-07-29", "2026-07-30"];
 
+function pad(n) { return String(n).padStart(2, "0"); }
+
+// Marathon dance blocks continue past midnight (e.g. 23:00-03:00). ev.date keeps
+// the true calendar date (needed for accurate calendar exports), but for UI
+// day-grouping we want them to stay under the evening they started - otherwise
+// browsing "Monday" wouldn't show the 00:00-02:00 tail of Monday night's
+// marathon, which several friends found confusing.
+function festivalDisplayDate(ev) {
+  const hour = parseInt((ev.start || "00:00").split(":")[0], 10);
+  if (hour < 5) {
+    const d = new Date(`${ev.date}T00:00:00`);
+    d.setDate(d.getDate() - 1);
+    const candidate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    return DATES.includes(candidate) ? candidate : ev.date;
+  }
+  return ev.date;
+}
+
+const EVENTS_WITH_FDAY = EVENTS.map((e) => ({ ...e, fday: festivalDisplayDate(e) }));
+
+
 const DANCE_VENUE_ORDER = ["hekhal-hakirya", "yovel", "cafe-theater-yad-labanim"];
 const SHOW_VENUE_ORDER = ["amphi-ashdod", "mishkan-ashdod", "yad-labanim", "cafe-theater-yad-labanim", "monart"];
 const ALL_VENUE_ORDER = [
@@ -26,13 +47,6 @@ const ALL_VENUE_ORDER = [
   ...SHOW_VENUE_ORDER.filter((v) => !DANCE_VENUE_ORDER.includes(v)),
 ];
 
-const PRESETS = [
-  { label: "זמן אמת", value: null },
-  { label: "שני 20:30", value: "2026-07-27T20:30" },
-  { label: "שלישי 19:00", value: "2026-07-28T19:00" },
-  { label: "רביעי 22:00", value: "2026-07-29T22:00" },
-  { label: "חמישי 01:30", value: "2026-07-30T01:30" },
-];
 
 
 function eventStartDate(ev) {
@@ -54,10 +68,94 @@ function eventEndDate(ev) {
 // (needed because some embedded/sandboxed viewers block the Clipboard API).
 // Returns true if copying succeeded automatically, false if the caller should
 // show the text for manual copying instead.
+function toIcsDate(dateObj) {
+  return `${dateObj.getFullYear()}${pad(dateObj.getMonth() + 1)}${pad(dateObj.getDate())}T${pad(dateObj.getHours())}${pad(dateObj.getMinutes())}00`;
+}
+
+function eventCalendarText(ev) {
+  const venue = VENUES[ev.venueId];
+  const bits =
+    ev.kind === "show"
+      ? [ev.subtype, ev.desc, ev.artists ? `אמנים: ${ev.artists}` : ""].filter(Boolean)
+      : [ev.audience, ev.staff ? `צוות: ${ev.staff}` : ""].filter(Boolean);
+  return { location: venue ? `${venue.name}, ${venue.address}` : "", description: bits.join(" | ") + " (אשדודאנס 2026)" };
+}
+
+// Opens Google Calendar's own "create event" screen pre-filled - no backend needed,
+// works reliably even if the user isn't signed into Google in this browser (it'll
+// just ask them to sign in first).
+function googleCalendarUrl(ev) {
+  const { location, description } = eventCalendarText(ev);
+  const start = toIcsDate(eventStartDate(ev));
+  const end = toIcsDate(eventEndDate(ev));
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: ev.title,
+    dates: `${start}/${end}`,
+    details: description,
+    location,
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+function buildIcs(events) {
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//AshdoDance 2026//Festival App//HE", "CALSCALE:GREGORIAN"];
+  events.forEach((ev) => {
+    const { location, description } = eventCalendarText(ev);
+    lines.push(
+      "BEGIN:VEVENT",
+      `UID:${ev.id}@ashdodance2026`,
+      `DTSTART:${toIcsDate(eventStartDate(ev))}`,
+      `DTEND:${toIcsDate(eventEndDate(ev))}`,
+      `SUMMARY:${ev.title}`,
+      `LOCATION:${location}`,
+      `DESCRIPTION:${description.replace(/\n/g, " ")}`,
+      "END:VEVENT"
+    );
+  });
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n");
+}
+
+function downloadIcs(events) {
+  const blob = new Blob([buildIcs(events)], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "הלוז-שלי-אשדודאנס2026.ics";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Two saved events "conflict" if their real time ranges overlap, regardless of
+// which calendar date they're nominally tagged with (handles overnight marathons).
+function findConflicts(list) {
+  const conflictIds = new Set();
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = list[i], b = list[j];
+      const aStart = eventStartDate(a), aEnd = eventEndDate(a);
+      const bStart = eventStartDate(b), bEnd = eventEndDate(b);
+      if (aStart < bEnd && bStart < aEnd) {
+        conflictIds.add(a.id);
+        conflictIds.add(b.id);
+      }
+    }
+  }
+  return conflictIds;
+}
+
+function mapsUrl(venue) {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${venue.name}, ${venue.address}`)}`;
+}
+
 function buildShareText(savedEvents, notes) {
   return savedEvents
     .map((e) => {
-      const dateLabel = DAY_META[e.date] ? `${DAY_META[e.date].weekday} ${DAY_META[e.date].label}` : e.date;
+      const d = e.fday || e.date;
+      const dateLabel = DAY_META[d] ? `${DAY_META[d].weekday} ${DAY_META[d].label}` : d;
       const timeLabel = `${e.start}${e.end ? `–${e.end}` : ""}`;
       const venue = VENUES[e.venueId]?.name || "";
       const content =
@@ -147,8 +245,9 @@ function fmtDateHe(dateStr) {
   return meta ? `${meta.weekday} ${meta.label}` : dateStr;
 }
 
-function EventCard({ ev, dayColor, isSaved, onToggle, showDate, isLive, removeMode, children }) {
-  const color = dayColor || (DAY_META[ev.date] ? DAY_META[ev.date].color : "#241623");
+function EventCard({ ev, dayColor, isSaved, onToggle, showDate, isLive, removeMode, conflict, checkbox, checked, onCheckToggle, children }) {
+  const color = dayColor || (DAY_META[ev.fday || ev.date] ? DAY_META[ev.fday || ev.date].color : "#241623");
+  const venue = VENUES[ev.venueId];
   return (
     <div
       className="rounded-2xl p-3.5 flex flex-col gap-2"
@@ -159,56 +258,79 @@ function EventCard({ ev, dayColor, isSaved, onToggle, showDate, isLive, removeMo
       }}
     >
       <div className="flex gap-3">
+        {checkbox && (
+          <input
+            type="checkbox"
+            checked={!!checked}
+            onChange={onCheckToggle}
+            className="mt-1 flex-shrink-0"
+            style={{ width: "18px", height: "18px", accentColor: "#241623" }}
+            aria-label="לכלול בשיתוף"
+          />
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap mb-1">
             {isLive && (
-              <span className="flex items-center gap-1 font-bold px-1.5 py-0.5 rounded-full" style={{ background: "#C81D3E", color: "#FBF3E6", fontSize: "10px" }}>
+              <span className="flex items-center gap-1 font-bold px-1.5 py-0.5 rounded-full" style={{ background: "#C81D3E", color: "#FBF3E6", fontSize: "0.625rem" }}>
                 <span className="w-1.5 h-1.5 rounded-full pop-anim" style={{ background: "#FBF3E6" }} /> קורה עכשיו
               </span>
             )}
+            {conflict && (
+              <span className="flex items-center gap-1 font-bold px-1.5 py-0.5 rounded-full" style={{ background: "#C81D3E22", color: "#C81D3E", fontSize: "0.625rem" }}>
+                ⚠ חופף לאירוע אחר שבחרת
+              </span>
+            )}
             {showDate && (
-              <span className="px-1.5 py-0.5 rounded-full" style={{ background: `${color}22`, color, fontSize: "10px" }}>
-                {fmtDateHe(ev.date)}
+              <span className="px-1.5 py-0.5 rounded-full" style={{ background: `${color}22`, color, fontSize: "0.625rem" }}>
+                {fmtDateHe(ev.fday || ev.date)}
               </span>
             )}
             {/* 1. שעה + קטגוריה/סוג-פורמט */}
             <span className="flex items-center gap-1 text-xs font-bold" style={{ color }}>
               <Clock size={12} /> {ev.start}{ev.end ? `–${ev.end}` : ""}
             </span>
-            <span className="px-1.5 py-0.5 rounded-full" style={{ background: "#241623", color: "#EDE3D0", fontSize: "10px" }}>
+            <span className="px-1.5 py-0.5 rounded-full" style={{ background: "#241623", color: "#EDE3D0", fontSize: "0.625rem" }}>
               {CAT_ICON[ev.cat]} {ev.cat}
             </span>
             {ev.free && (
-              <span className="px-1.5 py-0.5 rounded-full" style={{ background: "#E8A93D33", color: "#8A5A0F", fontSize: "10px" }}>
+              <span className="px-1.5 py-0.5 rounded-full" style={{ background: "#E8A93D33", color: "#8A5A0F", fontSize: "0.625rem" }}>
                 כניסה חופשית
               </span>
             )}
           </div>
 
           {/* 2. שם האירוע/מופע - בולד */}
-          <h3 className="font-bold leading-tight" style={{ color: "#241623", fontSize: "15px" }}>{ev.title}</h3>
+          <h3 className="font-bold leading-tight" style={{ color: "#241623", fontSize: "0.9375rem" }}>{ev.title}</h3>
 
           {ev.kind === "show" ? (
             <>
               {/* 3. סוג פורמט | תיאור וקהל יעד */}
               {(ev.subtype || ev.desc) && (
-                <p className="mt-1 leading-snug" style={{ color: "#6B5B63", fontSize: "12px" }}>
+                <p className="mt-1 leading-snug" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
                   {[ev.subtype, ev.desc].filter(Boolean).join(" | ")}
                 </p>
               )}
               {/* 4. אמנים ומשתתפים - בולד */}
               {ev.artists && (
-                <p className="font-bold mt-1 leading-snug" style={{ color: "#241623", fontSize: "12.5px" }}>
+                <p className="font-bold mt-1 leading-snug" style={{ color: "#241623", fontSize: "0.7812rem" }}>
                   {ev.artists}
                 </p>
               )}
               {/* 5. מתחם */}
-              <p className="flex items-center gap-1 mt-1" style={{ color: "#6B5B63", fontSize: "12px" }}>
-                <MapPin size={11} className="flex-shrink-0" /> {VENUES[ev.venueId]?.name}
-              </p>
+              {venue && (
+                <a
+                  href={mapsUrl(venue)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 mt-1 w-fit"
+                  style={{ color: "#6B5B63", fontSize: "0.75rem", textDecoration: "underline" }}
+                >
+                  <MapPin size={11} className="flex-shrink-0" /> {venue.name}
+                </a>
+              )}
               {/* 6. תוכן עמודת "כניסה והערות" */}
               {ev.notes && (
-                <p className="mt-0.5 leading-snug whitespace-nowrap" style={{ color: "#9C8F86", fontSize: "10px" }}>
+                <p className="mt-0.5 leading-snug whitespace-nowrap" style={{ color: "#9C8F86", fontSize: "0.625rem" }}>
                   {renderNotes(ev.notes)}
                 </p>
               )}
@@ -217,22 +339,40 @@ function EventCard({ ev, dayColor, isSaved, onToggle, showDate, isLive, removeMo
             <>
               {/* 3. קהל יעד / רמה / תקופה */}
               {ev.audience && (
-                <p className="mt-1 leading-snug" style={{ color: "#6B5B63", fontSize: "12px" }}>
+                <p className="mt-1 leading-snug" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
                   {ev.audience}
                 </p>
               )}
               {/* 4. צוות מקצועי - בולד */}
               {ev.staff && (
-                <p className="font-bold mt-1 leading-snug" style={{ color: "#241623", fontSize: "12.5px" }}>
+                <p className="font-bold mt-1 leading-snug" style={{ color: "#241623", fontSize: "0.7812rem" }}>
                   {ev.staff}
-                  {ev.unc && <span className="font-normal" style={{ color: "#C1861A", fontSize: "10px" }}> · לאמת שם</span>}
+                  {ev.unc && <span className="font-normal" style={{ color: "#C1861A", fontSize: "0.625rem" }}> · לאמת שם</span>}
                 </p>
               )}
-              <p className="flex items-center gap-1 mt-1" style={{ color: "#6B5B63", fontSize: "12px" }}>
-                <MapPin size={11} className="flex-shrink-0" /> {VENUES[ev.venueId]?.name}
-              </p>
+              {venue && (
+                <a
+                  href={mapsUrl(venue)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 mt-1 w-fit"
+                  style={{ color: "#6B5B63", fontSize: "0.75rem", textDecoration: "underline" }}
+                >
+                  <MapPin size={11} className="flex-shrink-0" /> {venue.name}
+                </a>
+              )}
             </>
           )}
+
+          <a
+            href={googleCalendarUrl(ev)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 mt-1.5 w-fit px-2 py-0.5 rounded-full"
+            style={{ background: "#F3ECDF", color: "#6B5B63", fontSize: "0.6562rem" }}
+          >
+            <Calendar size={11} /> הוסף ליומן Google
+          </a>
         </div>
         <button
           onClick={() => onToggle(ev)}
@@ -255,6 +395,32 @@ function EventCard({ ev, dayColor, isSaved, onToggle, showDate, isLive, removeMo
 export default function App() {
   const [selectedDate, setSelectedDate] = useState(DATES[0]);
   const [catFilter, setCatFilter] = useState("all"); // all | show | dance
+  const [danceSubFilter, setDanceSubFilter] = useState("all"); // all | מעגלים | זוגות | משולב
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [bigText, setBigText] = useState(false);
+
+  // Load the big-text preference once on mount (device-only, like the saved picks).
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("ashdodance2026:bigText");
+      if (v === "1") setBigText(true);
+    } catch (e) {}
+  }, []);
+
+  // Scaling the root font-size scales every rem-based size in the app (our own
+  // fontSize values, converted to rem above, AND Tailwind's text-xs/text-sm/etc
+  // classes) together - so nothing is hard-coded in px and gets clipped. The
+  // phone-frame's own height stays a fixed px/dvh value (untouched), so the
+  // visible screen size never changes - only the content inside grows and the
+  // page simply scrolls a bit more. Nothing can disappear off-screen.
+  useEffect(() => {
+    document.documentElement.style.fontSize = bigText ? "119%" : "100%";
+    try {
+      localStorage.setItem("ashdodance2026:bigText", bigText ? "1" : "0");
+    } catch (e) {}
+  }, [bigText]);
+
   const [tab, setTab] = useState("program");
   const [saved, setSaved] = useState({});
   const [notes, setNotes] = useState({});
@@ -289,22 +455,19 @@ export default function App() {
   }, [notes, hydrated]);
 
   const [shareFallback, setShareFallback] = useState(null); // text to show for manual copy when auto-copy fails
+  const [uncheckedForShare, setUncheckedForShare] = useState({}); // ids explicitly excluded (default: everything included)
   const updateNote = (id, value) => setNotes((prev) => ({ ...prev, [id]: value }));
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
 
-  const [customNowStr, setCustomNowStr] = useState(PRESETS[1].value); // default to a lively demo moment
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    if (customNowStr) return; // only tick real clock in real-time mode
     const t = setInterval(() => setTick((x) => x + 1), 30000);
     return () => clearInterval(t);
-  }, [customNowStr]);
+  }, []);
 
-  const effectiveNow = useMemo(() => {
-    return customNowStr ? new Date(customNowStr) : new Date();
-  }, [customNowStr, tick]);
+  const effectiveNow = useMemo(() => new Date(), [tick]);
 
   const showToast = (msg) => {
     setToast(msg);
@@ -334,14 +497,43 @@ export default function App() {
     [saved]
   );
 
+  const conflicts = useMemo(() => findConflicts(savedList), [savedList]);
+
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return EVENTS_WITH_FDAY.filter((e) => {
+      const haystack = [
+        e.title, e.cat, e.audience, e.staff, e.subtype, e.desc, e.artists,
+        VENUES[e.venueId]?.name,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return haystack.includes(q);
+    }).sort((a, b) => eventStartDate(a) - eventStartDate(b));
+  }, [searchQuery]);
+
+  const selectedForShare = useMemo(
+    () => savedList.filter((e) => !uncheckedForShare[e.id]),
+    [savedList, uncheckedForShare]
+  );
+  const toggleCheckForShare = (id) =>
+    setUncheckedForShare((prev) => {
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = true;
+      return next;
+    });
+  const allChecked = selectedForShare.length === savedList.length;
+
   const matchesFilter = (ev) => {
     if (catFilter === "all") return true;
     if (catFilter === "show") return ev.cat === "מופע מרכזי";
-    return ev.cat !== "מופע מרכזי"; // "dance" - all led/participatory dance sessions
+    if (ev.cat === "מופע מרכזי") return false; // "dance"
+    if (danceSubFilter === "all") return true;
+    return ev.cat === danceSubFilter;
   };
 
   const dayEventsByVenue = useMemo(() => {
-    const dayEvents = [...EVENTS].filter((e) => e.date === selectedDate && matchesFilter(e)).sort(
+    const dayEvents = [...EVENTS_WITH_FDAY].filter((e) => e.fday === selectedDate && matchesFilter(e)).sort(
       (a, b) => eventStartDate(a) - eventStartDate(b)
     );
     const groups = {};
@@ -350,17 +542,20 @@ export default function App() {
       groups[e.venueId].push(e);
     });
     return groups;
-  }, [selectedDate, catFilter]);
+  }, [selectedDate, catFilter, danceSubFilter]);
 
   const { liveNow, upcoming } = useMemo(() => {
-    const all = [...EVENTS];
+    const all = [...EVENTS_WITH_FDAY];
     const live = all
       .filter((e) => eventStartDate(e) <= effectiveNow && effectiveNow < eventEndDate(e))
       .sort((a, b) => eventStartDate(a) - eventStartDate(b));
+    const twoHoursMs = 2 * 60 * 60 * 1000;
     const next = all
-      .filter((e) => eventStartDate(e) > effectiveNow)
-      .sort((a, b) => eventStartDate(a) - eventStartDate(b))
-      .slice(0, 10);
+      .filter((e) => {
+        const diff = eventStartDate(e) - effectiveNow;
+        return diff > 0 && diff <= twoHoursMs;
+      })
+      .sort((a, b) => eventStartDate(a) - eventStartDate(b));
     return { liveNow: live, upcoming: next };
   }, [effectiveNow]);
 
@@ -401,10 +596,30 @@ export default function App() {
       >
         {/* Header */}
         <div className="px-5 pt-5 pb-3 flex-shrink-0" style={{ background: "#241623" }}>
-          <div>
-            <p style={{ color: "#E8A93D", fontSize: "11px", letterSpacing: "0.25em" }}>FEST · DANCE WITH LOVE</p>
-            <h1 className="display-font text-3xl font-bold" style={{ color: "#FBF3E6" }}>אשדודאנס 2026</h1>
-            <p className="text-xs mt-0.5" style={{ color: "#C9BBB0" }}>27–30.7 · הפסטיבל הבינלאומי למחול · אשדוד</p>
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p style={{ color: "#E8A93D", fontSize: "0.6875rem", letterSpacing: "0.25em" }}>FEST · DANCE WITH LOVE</p>
+              <h1 className="display-font text-3xl font-bold" style={{ color: "#FBF3E6" }}>אשדודאנס 2026</h1>
+              <p className="text-xs mt-0.5" style={{ color: "#C9BBB0" }}>27–30.7 · הפסטיבל הבינלאומי למחול · אשדוד</p>
+            </div>
+            <div className="flex gap-1.5 flex-shrink-0">
+              <button
+                onClick={() => setSearchOpen((v) => !v)}
+                className="w-9 h-9 rounded-full flex items-center justify-center"
+                style={{ background: searchOpen ? "#E8A93D" : "#3A2C42" }}
+                aria-label="חיפוש"
+              >
+                <Search size={16} color={searchOpen ? "#241623" : "#EDE3D0"} />
+              </button>
+              <button
+                onClick={() => setBigText((v) => !v)}
+                className="w-9 h-9 rounded-full flex items-center justify-center"
+                style={{ background: bigText ? "#E8A93D" : "#3A2C42" }}
+                aria-label="טקסט גדול"
+              >
+                <Type size={16} color={bigText ? "#241623" : "#EDE3D0"} />
+              </button>
+            </div>
           </div>
 
           {/* Day chain selector - always visible (pinned header), on every tab, so the chosen day never scrolls away */}
@@ -434,7 +649,7 @@ export default function App() {
                     >
                       {meta.label}
                     </span>
-                    <span style={{ color: active ? "#FBF3E6" : "#8A7B84", fontSize: "10px" }}>
+                    <span style={{ color: active ? "#FBF3E6" : "#8A7B84", fontSize: "0.625rem" }}>
                       {meta.weekday}
                     </span>
                   </button>
@@ -462,7 +677,7 @@ export default function App() {
                   style={{
                     background: active ? "#E8A93D" : "#3A2C42",
                     color: active ? "#241623" : "#C9BBB0",
-                    fontSize: "11px",
+                    fontSize: "0.6875rem",
                   }}
                 >
                   {f.label}
@@ -471,40 +686,75 @@ export default function App() {
             })}
           </div>
 
-          {tab === "now" && (
-            <div className="mt-4 rounded-xl p-3" style={{ background: "#3A2C42" }}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="flex items-center gap-1 text-xs font-bold" style={{ color: "#E8A93D" }}>
-                  <Zap size={13} /> {nowLabel}
-                </span>
-                {customNowStr && (
-                  <button onClick={() => setCustomNowStr(null)} className="flex items-center gap-1" style={{ color: "#C9BBB0", fontSize: "10px" }}>
-                    <RotateCcw size={11} /> חזרה לזמן אמת
-                  </button>
-                )}
-              </div>
-              <div className="flex gap-1.5 flex-wrap">
-                {PRESETS.map((p) => (
+          {catFilter === "dance" && (
+            <div className="mt-1.5 flex gap-1.5">
+              {[
+                { key: "all", label: "כל ההרקדות" },
+                { key: "מעגלים", label: "מעגלים" },
+                { key: "זוגות", label: "זוגות" },
+                { key: "משולב", label: "משולב" },
+              ].map((f) => {
+                const active = danceSubFilter === f.key;
+                return (
                   <button
-                    key={p.label}
-                    onClick={() => setCustomNowStr(p.value)}
-                    className="px-2 py-1 rounded-full font-bold"
+                    key={f.key}
+                    onClick={() => setDanceSubFilter(f.key)}
+                    className="flex-1 py-1 rounded-full font-bold text-center"
                     style={{
-                      background: customNowStr === p.value ? "#E8A93D" : "#4A3A54",
-                      color: customNowStr === p.value ? "#241623" : "#EDE3D0",
-                      fontSize: "10px",
+                      background: active ? "#E8A93D99" : "#3A2C4288",
+                      color: active ? "#241623" : "#C9BBB0",
+                      fontSize: "0.625rem",
                     }}
                   >
-                    {p.label}
+                    {f.label}
                   </button>
-                ))}
-              </div>
+                );
+              })}
+            </div>
+          )}
+
+          {tab === "now" && (
+            <div className="mt-4 rounded-xl p-3 flex items-center gap-2" style={{ background: "#3A2C42" }}>
+              <span className="flex items-center gap-1 text-xs font-bold" style={{ color: "#E8A93D" }}>
+                <Zap size={13} /> {nowLabel}
+              </span>
             </div>
           )}
         </div>
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto no-scrollbar" style={{ background: "#FBF3E6" }}>
+          {searchOpen && (
+            <div className="px-5 py-4">
+              <input
+                autoFocus
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder='חיפוש כללי, לדוג׳ "נוסטלגיה", "איציק בן דהן", "אולם הקריה"'
+                className="w-full rounded-xl px-4 py-3 outline-none mb-4"
+                style={{ background: "#FFFFFF", color: "#241623", fontSize: "0.875rem", boxShadow: "0 1px 3px rgba(36,22,35,0.08)" }}
+              />
+              {searchQuery.trim().length < 2 ? (
+                <p className="text-center" style={{ color: "#8A7B84", fontSize: "0.75rem" }}>
+                  הקלידי לפחות 2 תווים כדי לחפש בכל 116 האירועים בפסטיבל.
+                </p>
+              ) : searchResults.length === 0 ? (
+                <p className="text-center" style={{ color: "#8A7B84", fontSize: "0.75rem" }}>
+                  לא נמצאו תוצאות עבור "{searchQuery}".
+                </p>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  <p style={{ color: "#8A7B84", fontSize: "0.6875rem" }}>{searchResults.length} תוצאות</p>
+                  {searchResults.map((ev) => (
+                    <EventCard key={ev.id} ev={ev} isSaved={!!saved[ev.id]} onToggle={toggleSave} showDate />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {!searchOpen && (
+          <>
           {tab === "program" && (
             <div className="pb-6">
               {currentVenueOrder.filter((v) => dayEventsByVenue[v]).map((venueId) => (
@@ -515,7 +765,7 @@ export default function App() {
                   >
                     <span
                       className="font-bold px-1.5 py-0.5 rounded-full flex-shrink-0"
-                      style={{ background: dayColor, color: "#FBF3E6", fontSize: "10px" }}
+                      style={{ background: dayColor, color: "#FBF3E6", fontSize: "0.625rem" }}
                     >
                       {DAY_META[selectedDate].weekday} · {DAY_META[selectedDate].label}
                     </span>
@@ -549,7 +799,7 @@ export default function App() {
               </div>
               {liveNow.length === 0 ? (
                 <div className="rounded-xl p-4 mb-5 text-center text-xs" style={{ background: "#F3ECDF", color: "#8A7B84" }}>
-                  אין אירוע פעיל כרגע בשעה הזו. בדקי את "בקרוב" למטה, או נסי אחד מכפתורי הזמן למעלה.
+                  אין אירוע פעיל כרגע בשעה הזו. בדקי את "בקרוב" למטה.
                 </div>
               ) : (
                 <div className="flex flex-col gap-3 mb-5">
@@ -559,10 +809,10 @@ export default function App() {
                 </div>
               )}
 
-              <h2 className="text-sm font-bold mb-2" style={{ color: "#241623" }}>בקרוב</h2>
+              <h2 className="text-sm font-bold mb-2" style={{ color: "#241623" }}>בקרוב (בשעתיים הקרובות)</h2>
               {upcoming.length === 0 ? (
                 <div className="rounded-xl p-4 text-center text-xs" style={{ background: "#F3ECDF", color: "#8A7B84" }}>
-                  אין עוד אירועים אחרי הרגע הזה בפסטיבל.
+                  אין אירועים שמתחילים בשעתיים הקרובות.
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">
@@ -588,10 +838,10 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <div className="flex gap-2 mb-4">
+                  <div className="flex gap-2 mb-2">
                     <button
                       onClick={async () => {
-                        const text = buildShareText(savedList, notes);
+                        const text = buildShareText(selectedForShare, notes);
                         const ok = await copyToClipboard(text);
                         if (ok) {
                           showToast("הלו\"ז הועתק - אפשר להדביק בוואטסאפ");
@@ -599,21 +849,55 @@ export default function App() {
                           setShareFallback(text);
                         }
                       }}
-                      className="flex-1 flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold"
+                      disabled={selectedForShare.length === 0}
+                      className="flex-1 flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold disabled:opacity-40"
                       style={{ background: "#241623", color: "#FBF3E6" }}
                     >
-                      <Share2 size={15} /> שיתוף הלו"ז
+                      <Share2 size={15} /> שיתוף ({selectedForShare.length})
+                    </button>
+                    <button
+                      onClick={() => downloadIcs(selectedForShare)}
+                      disabled={selectedForShare.length === 0}
+                      className="flex-1 flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold disabled:opacity-40"
+                      style={{ background: "#F3ECDF", color: "#241623" }}
+                    >
+                      <Calendar size={15} /> ייצוא ליומן
                     </button>
                   </div>
+                  <button
+                    onClick={() => setUncheckedForShare(allChecked ? Object.fromEntries(savedList.map((e) => [e.id, true])) : {})}
+                    className="mb-4 self-start"
+                    style={{ color: "#6B5B63", fontSize: "0.6875rem", textDecoration: "underline" }}
+                  >
+                    {allChecked ? "בטל בחירת הכל" : "בחר הכל"}
+                  </button>
 
-                  {DATES.filter((d) => savedList.some((e) => e.date === d)).map((d) => (
-                    <div key={d} className="mb-4">
-                      <p className="text-xs font-bold mb-2" style={{ color: DAY_META[d].color }}>
-                        {DAY_META[d].weekday} · {DAY_META[d].label}
-                      </p>
-                      <div className="flex flex-col gap-2">
-                        {savedList.filter((e) => e.date === d).map((ev) => (
-                          <EventCard key={ev.id} ev={ev} isSaved onToggle={toggleSave} removeMode>
+                  {DATES.filter((d) => savedList.some((e) => (e.fday || e.date) === d)).map((d) => (
+                    <div key={d}>
+                      <div
+                        className="sticky top-0 z-10 -mx-5 px-5 py-2 mb-2 backdrop-blur"
+                        style={{ background: "#FBF3E6EE", borderBottom: `2px solid ${DAY_META[d].color}22` }}
+                      >
+                        <span
+                          className="font-bold px-1.5 py-0.5 rounded-full"
+                          style={{ background: DAY_META[d].color, color: "#FBF3E6", fontSize: "0.625rem" }}
+                        >
+                          {DAY_META[d].weekday} · {DAY_META[d].label}
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-2 mb-4">
+                        {savedList.filter((e) => (e.fday || e.date) === d).map((ev) => (
+                          <EventCard
+                            key={ev.id}
+                            ev={ev}
+                            isSaved
+                            onToggle={toggleSave}
+                            removeMode
+                            conflict={conflicts.has(ev.id)}
+                            checkbox
+                            checked={!uncheckedForShare[ev.id]}
+                            onCheckToggle={() => toggleCheckForShare(ev.id)}
+                          >
                             <div className="flex items-center gap-1.5 pt-1" style={{ borderTop: "1px dashed #EEE3D3" }}>
                               <Pencil size={11} color="#B0A296" className="flex-shrink-0" />
                               <input
@@ -622,7 +906,7 @@ export default function App() {
                                 onChange={(e) => updateNote(ev.id, e.target.value)}
                                 placeholder="הוסיפי הערה אישית, למשל: זוגות עם מיכל"
                                 className="flex-1 bg-transparent outline-none"
-                                style={{ color: "#4A3A44", fontSize: "12px" }}
+                                style={{ color: "#4A3A44", fontSize: "0.75rem" }}
                               />
                             </div>
                           </EventCard>
@@ -644,7 +928,7 @@ export default function App() {
                     <div>
                       <p className="font-bold text-sm" style={{ color: "#241623" }}>{VENUES[v].name}</p>
                       <p className="text-xs mt-0.5" style={{ color: "#8A7B84" }}>{VENUES[v].address}</p>
-                      {VENUES[v].notes && <p className="mt-1" style={{ color: "#B0A296", fontSize: "11px" }}>{VENUES[v].notes}</p>}
+                      {VENUES[v].notes && <p className="mt-1" style={{ color: "#B0A296", fontSize: "0.6875rem" }}>{VENUES[v].notes}</p>}
                     </div>
                   </div>
                 </div>
@@ -656,12 +940,12 @@ export default function App() {
             <div className="px-5 py-4">
               <div className="rounded-xl p-4 text-center" style={{ background: "#241623" }}>
                 <Heart size={16} color="#E8A93D" fill="#E8A93D" className="mx-auto mb-2" />
-                <p className="leading-relaxed" style={{ color: "#EDE3D0", fontSize: "12px" }}>
+                <p className="leading-relaxed" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
                   האפליקציה נבנתה באהבה ובהתבסס על המידע שפורסם לציבור על פסטיבל אשדודאנס.
                   היא מוגשת ללא עלות, לנוחות חבריי וחברותיי וכל מי שמעוניין להשתמש בה.
                   ייתכנו שינויים או אי־דיוקים, ולכן מומלץ להתעדכן גם בפרסומים הרשמיים של הפסטיבל.
                 </p>
-                <p className="mt-2" style={{ color: "#C9BBB0", fontSize: "11px" }}>
+                <p className="mt-2" style={{ color: "#C9BBB0", fontSize: "0.6875rem" }}>
                   למידע נוסף: אלי שבמנאו ·{" "}
                   <a href="mailto:ELI.S@ESAC-SMART.CO.IL" style={{ color: "#E8A93D", textDecoration: "underline" }}>
                     ELI.S@ESAC-SMART.CO.IL
@@ -669,6 +953,8 @@ export default function App() {
                 </p>
               </div>
             </div>
+          )}
+          </>
           )}
         </div>
 
@@ -684,7 +970,7 @@ export default function App() {
             {savedList.length > 0 && (
               <span
                 className="absolute -top-1 -right-1 px-1 rounded-full flex items-center justify-center font-bold"
-                style={{ background: "#C81D3E", color: "#FBF3E6", minWidth: "20px", height: "20px", fontSize: "11px" }}
+                style={{ background: "#C81D3E", color: "#FBF3E6", minWidth: "20px", height: "20px", fontSize: "0.6875rem" }}
               >
                 {savedList.length}
               </span>
@@ -715,10 +1001,10 @@ export default function App() {
               style={{ background: "#FBF3E6" }}
               onClick={(e) => e.stopPropagation()}
             >
-              <p className="font-bold mb-1" style={{ color: "#241623", fontSize: "13px" }}>
+              <p className="font-bold mb-1" style={{ color: "#241623", fontSize: "0.8125rem" }}>
                 ההעתקה האוטומטית לא זמינה כאן
               </p>
-              <p className="mb-2" style={{ color: "#6B5B63", fontSize: "11px" }}>
+              <p className="mb-2" style={{ color: "#6B5B63", fontSize: "0.6875rem" }}>
                 סמני את הטקסט למטה והעתיקי אותו ידנית (לחיצה ארוכה → העתק):
               </p>
               <textarea
@@ -726,12 +1012,12 @@ export default function App() {
                 value={shareFallback}
                 onFocus={(e) => e.target.select()}
                 className="w-full rounded-xl p-2 outline-none"
-                style={{ background: "#FFFFFF", color: "#241623", fontSize: "12px", height: "220px", border: "1px solid #E3D9C8", direction: "rtl" }}
+                style={{ background: "#FFFFFF", color: "#241623", fontSize: "0.75rem", height: "220px", border: "1px solid #E3D9C8", direction: "rtl" }}
               />
               <button
                 onClick={() => setShareFallback(null)}
                 className="w-full mt-3 py-2 rounded-xl font-bold"
-                style={{ background: "#241623", color: "#FBF3E6", fontSize: "12px" }}
+                style={{ background: "#241623", color: "#FBF3E6", fontSize: "0.75rem" }}
               >
                 סגירה
               </button>
@@ -756,7 +1042,7 @@ export default function App() {
                 style={{ color: active ? "#C81D3E" : "#B0A296" }}
               >
                 <Icon size={18} />
-                <span className="font-bold" style={{ fontSize: "10px" }}>{label}</span>
+                <span className="font-bold" style={{ fontSize: "0.625rem" }}>{label}</span>
               </button>
             );
           })}
