@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useMemo, useRef, useEffect } from "react";
+import { track } from "@vercel/analytics";
 import { Heart, Calendar, MapPin, X, Building2, Clock, Share2, Zap, Pencil, Info, Search, Type } from "lucide-react";
 
 const STORAGE_KEY_SAVED = "ashdodance2026:saved";
@@ -445,6 +446,26 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [bigText, setBigText] = useState(false);
 
+  // Usage/install tracking (Vercel Analytics custom events).
+  // Android/Chrome fires a real "appinstalled" event we can listen for - this
+  // gives an exact install count. iOS Safari exposes no such API for any site
+  // (an Apple platform limitation, not something we can work around), so the
+  // best we can do there is record, on every visit, whether the app is
+  // currently running in "installed" (standalone/full-screen) mode - which
+  // builds an indirect picture of adoption over time even without a precise
+  // install moment.
+  useEffect(() => {
+    const onInstalled = () => track("app_installed", { platform: "android" });
+    window.addEventListener("appinstalled", onInstalled);
+
+    const isStandalone =
+      window.matchMedia?.("(display-mode: standalone)")?.matches ||
+      window.navigator.standalone === true; // iOS Safari flag
+    track("app_open", { mode: isStandalone ? "installed" : "browser" });
+
+    return () => window.removeEventListener("appinstalled", onInstalled);
+  }, []);
+
   // Load the big-text preference once on mount (device-only, like the saved picks).
   useEffect(() => {
     try {
@@ -588,9 +609,28 @@ export default function App() {
     return ev.cat === danceSubFilter;
   };
 
+  // For display order *within* a given festival day, hours after midnight that
+  // belong to that evening's story (e.g. a marathon's 00:00-04:00 tail) should
+  // always sort after that evening's other events - even when, like the closing
+  // marathon on the last night, the raw calendar date never changes at midnight.
+  // We reuse the same "true continuation" check as festivalDisplayDate.
+  const narrativeMinutes = (ev) => {
+    const [h, m] = (ev.start || "00:00").split(":").map(Number);
+    const isLateNightTail = h < 5 && ev.fday === ev.date
+      ? EVENTS.some(
+          (o) =>
+            o.title === ev.title &&
+            o.venueId === ev.venueId &&
+            o.date === ev.date &&
+            parseInt((o.start || "00:00").split(":")[0], 10) >= 21
+        )
+      : h < 5;
+    return isLateNightTail ? (h + 24) * 60 + m : h * 60 + m;
+  };
+
   const dayEventsByVenue = useMemo(() => {
     const dayEvents = [...EVENTS_WITH_FDAY].filter((e) => e.fday === selectedDate && matchesFilter(e)).sort(
-      (a, b) => eventStartDate(a) - eventStartDate(b)
+      (a, b) => narrativeMinutes(a) - narrativeMinutes(b)
     );
     const groups = {};
     dayEvents.forEach((e) => {
@@ -1015,20 +1055,107 @@ export default function App() {
           )}
 
           {tab === "about" && (
-            <div className="px-5 py-4">
-              <div className="rounded-xl p-4 text-center" style={{ background: "#241623" }}>
-                <Heart size={16} color="#E8A93D" fill="#E8A93D" className="mx-auto mb-2" />
-                <p className="leading-relaxed" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
-                  האפליקציה נבנתה באהבה ובהתבסס על המידע שפורסם לציבור על פסטיבל אשדודאנס.
-                  היא מוגשת ללא עלות, לנוחות חבריי וחברותיי וכל מי שמעוניין להשתמש בה.
-                  ייתכנו שינויים או אי־דיוקים, ולכן מומלץ להתעדכן גם בפרסומים הרשמיים של הפסטיבל.
+            <div className="px-5 py-4 flex flex-col gap-5">
+              {/* חלק 1 - הסיפור האישי */}
+              <div className="rounded-xl p-4" style={{ background: "#241623" }}>
+                <p className="leading-relaxed" style={{ color: "#EDE3D0", fontSize: "0.8125rem" }}>
+                  חבריי, חברותיי וכל קהילת הרוקדים באי פסטיבל אשדודאנס שלום!
                 </p>
-                <p className="mt-2" style={{ color: "#C9BBB0", fontSize: "0.6875rem" }}>
-                  למידע נוסף: אלי שבמנאו ·{" "}
-                  <a href="mailto:ELI.S@ESAC-SMART.CO.IL" style={{ color: "#E8A93D", textDecoration: "underline" }}>
+                <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                  בהיותי אשדודי גאה, שמאוד אוהב לרקוד בכלל וריקודי עם בפרט, מאז שחזרתי לרחבה אני מקפיד להגיע לפסטיבל אשדודאנס ולהשתתף בכמה שיותר אירועים המתקיימים במסגרת הפסטיבל.
+                </p>
+                <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                  מאחר שהפסטיבל כולל מדי שנה למעלה מ-100 אירועי הרקדות ומופעים, תמיד התקשיתי לנהל מעקב אחר הבחירות שלי (באילו אירועים אני רוצה להשתתף), נוצרו לי התנגשויות בין אירועים שבחרתי וגם יותר מפעם אחת תיאמתי עם שתי בנות זוג להרקדה זוגות ספציפית (כן כן... זה ממש לא נעים).
+                </p>
+                <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                  לכן, השנה החלטתי לפנק את עצמי, את חבריי וחברותיי ואת כל קהילת הרוקדים באי הפסטיבל, ובניתי אפליקציה ידידותית ופשוטה לשימוש, המציגה את כל תכני הפסטיבל וכן מאפשרת לבחור את האירועים שכל אחד מאיתנו מעוניין להשתתף בהם, לנהל מעקב, לכתוב הערות אישיות לכל אירוע ("זוגות עם דניאל"), להכניס ליומן ואף לשתף את החברים והחברות באירועים שבחרנו.
+                </p>
+                <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                  האפליקציה הינה חינמית ומוגשת לשימושכם האישי ללא צורך ברישום או תשלום כלשהו...
+                </p>
+                <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                  האפליקציה נבנתה באהבה בהתבסס על המידע שפורסם לציבור על פסטיבל אשדודאנס. היא מוגשת ללא עלות, לנוחות חבריי וחברותיי וכל מי שמעוניין להשתמש בה. ייתכנו שינויים או אי־דיוקים, ולכן מומלץ להתעדכן גם בפרסומים הרשמיים של הפסטיבל:{" "}
+                  <a href="https://www.ashdodance.co.il" target="_blank" rel="noopener noreferrer" style={{ color: "#E8A93D", textDecoration: "underline" }}>
+                    WWW.ASHDODANCE.CO.IL
+                  </a>
+                </p>
+                <p className="leading-relaxed mt-3 font-bold" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                  מאחל לכולנו פסטיבל מלא באירועים טובים, בא.נשים מוארים באושר ושמחה, בריקודים בלי סוף
+                  <br />
+                  והעיקר... תרקדו את הלב שלכם
+                </p>
+              </div>
+
+              {/* חלק 2 - האיור האישי */}
+              <div className="flex flex-col items-center">
+                <img
+                  src="/images/signature.png"
+                  alt="איור אישי - תרקוד את הלב שלך"
+                  style={{ width: "170px", height: "auto" }}
+                />
+                <p className="display-font mt-1" style={{ color: "#241623", fontSize: "1.05rem" }}>
+                  תרקוד את הלב שלך
+                </p>
+              </div>
+
+              {/* חלק 3 - יצירת קשר */}
+              <div className="rounded-xl p-4 text-center" style={{ background: "#F3ECDF" }}>
+                <p className="leading-relaxed" style={{ color: "#4A3A44", fontSize: "0.75rem" }}>
+                  מוזמנים לכתוב לי תגובות, הערות, הארות, רעיונות לשיפור וכל מה שתרצו לשתף איתי.
+                </p>
+                <p className="mt-2" style={{ color: "#8A7B84", fontSize: "0.6875rem" }}>
+                  אלי שבמנאו ·{" "}
+                  <a href="mailto:ELI.S@ESAC-SMART.CO.IL" style={{ color: "#C1861A", textDecoration: "underline" }}>
                     ELI.S@ESAC-SMART.CO.IL
                   </a>
                 </p>
+              </div>
+
+              {/* חלק 4 - קו מפריד + מדריך שימוש */}
+              <div style={{ borderTop: "1px solid #E3D9C8" }} />
+              <div>
+                <h2 className="display-font font-bold mb-3" style={{ color: "#241623", fontSize: "1.15rem" }}>
+                  מדריך שימוש
+                </h2>
+
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>א. מסך הפתיחה - תוכנייה</h3>
+                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                      בוחרים יום מתוך בורר הימים הצבעוני (27.7–30.7). שלושת הכפתורים למטה מסננים בין <b>מופעים</b>, <b>הרקדות</b> או <b>כלל האירועים</b>. כשבוחרים "הרקדות" נפתחת שורת תת-סינון נוספת: <b>מעגלים</b> / <b>זוגות</b> / <b>משולב</b>. כפתור החיפוש (🔍) בכותרת מחפש חופשי בכל 116 האירועים - לפי שם, מדריך/אמן, אולם, או אפילו מילה כמו "נוסטלגיה". כפתור "Aa" מגדיל את כל הטקסטים באפליקציה.
+                    </p>
+                  </div>
+                  <div>
+                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ב. שריון אירועים</h3>
+                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                      לוחצים על הלב ❤️ בכל כרטיס כדי לשמור אירוע ללו"ז האישי. הכפתור הצף בפינה נותן גישה מיידית ללו"ז השמור, מכל מסך באפליקציה.
+                    </p>
+                  </div>
+                  <div>
+                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ג. הלו"ז שלי</h3>
+                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                      אפשר להוסיף הערה אישית קצרה לכל אירוע שמור (למשל "זוגות עם דניאל"). תיבות הסימון ליד כל אירוע, ו"בחר הכל", קובעות מה נכלל בשיתוף או בייצוא ליומן. כפתור השיתוף שולח את הלו"ז כטקסט מוכן לוואטסאפ. אפשר גם להוסיף כל אירוע ליומן Google בנפרד, או לייצא ליומן את כל הרשימה המסומנת בבת אחת. אירועים חופפים בזמן מסומנים באזהרה.
+                    </p>
+                  </div>
+                  <div>
+                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ד. טאב "עכשיו"</h3>
+                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                      מציג מה קורה ממש כרגע, ומה מתחיל בשעתיים הקרובות - בזמן אמת.
+                    </p>
+                  </div>
+                  <div>
+                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ה. טאב "אולמות"</h3>
+                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                      כל כתובות האולמות במקום אחד, עם כפתור ניווט ישיר לגוגל מפות.
+                    </p>
+                  </div>
+                  <div>
+                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ו. טאב "אודות"</h3>
+                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                      המסך שאתם בו עכשיו - מידע כללי ופרטי יצירת קשר.
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
           )}

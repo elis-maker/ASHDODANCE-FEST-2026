@@ -1,3 +1,5 @@
+import { Analytics } from "@vercel/analytics/next";
+
 export const metadata = {
   title: "אשדודאנס 2026",
   description:
@@ -28,7 +30,10 @@ export const viewport = {
 export default function RootLayout({ children }) {
   return (
     <html lang="he" dir="rtl">
-      <body>{children}</body>
+      <body>
+        {children}
+        <Analytics />
+      </body>
     </html>
   );
 }
