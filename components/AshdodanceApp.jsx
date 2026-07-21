@@ -700,26 +700,23 @@ export default function App() {
                 <bdi dir="ltr">27-30/7</bdi> · הפסטיבל הבינלאומי למחול · אשדוד
               </p>
             </div>
-            <div className="flex flex-col items-center gap-2 flex-shrink-0">
-              <div className="flex gap-1.5">
-                <button
-                  onClick={() => setSearchOpen((v) => !v)}
-                  className="w-9 h-9 rounded-full flex items-center justify-center"
-                  style={{ background: searchOpen ? "#E8A93D" : "#3A2C42" }}
-                  aria-label="חיפוש"
-                >
-                  <Search size={16} color={searchOpen ? "#241623" : "#EDE3D0"} />
-                </button>
-                <button
-                  onClick={() => setBigText((v) => !v)}
-                  className="w-9 h-9 rounded-full flex items-center justify-center"
-                  style={{ background: bigText ? "#E8A93D" : "#3A2C42" }}
-                  aria-label="טקסט גדול"
-                >
-                  <Type size={16} color={bigText ? "#241623" : "#EDE3D0"} />
-                </button>
-              </div>
-              <img src="/images/signature-gold.png" alt="" aria-hidden="true" style={{ width: "76px", height: "auto" }} />
+            <div className="flex gap-1.5 flex-shrink-0">
+              <button
+                onClick={() => setSearchOpen((v) => !v)}
+                className="w-9 h-9 rounded-full flex items-center justify-center"
+                style={{ background: searchOpen ? "#E8A93D" : "#3A2C42" }}
+                aria-label="חיפוש"
+              >
+                <Search size={16} color={searchOpen ? "#241623" : "#EDE3D0"} />
+              </button>
+              <button
+                onClick={() => setBigText((v) => !v)}
+                className="w-9 h-9 rounded-full flex items-center justify-center"
+                style={{ background: bigText ? "#E8A93D" : "#3A2C42" }}
+                aria-label="טקסט גדול"
+              >
+                <Type size={16} color={bigText ? "#241623" : "#EDE3D0"} />
+              </button>
             </div>
           </div>
 
@@ -1046,19 +1043,10 @@ export default function App() {
                 <div key={v} className="rounded-xl p-4" style={{ background: "#FFFFFF", boxShadow: "0 1px 3px rgba(36,22,35,0.08)" }}>
                   <div className="flex items-start gap-2">
                     <MapPin size={16} color="#C81D3E" className="mt-0.5 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
+                    <div>
                       <p className="font-bold text-sm" style={{ color: "#241623" }}>{VENUES[v].name}</p>
                       <p className="text-xs mt-0.5" style={{ color: "#8A7B84" }}>{VENUES[v].address}</p>
                       {VENUES[v].notes && <p className="mt-1" style={{ color: "#B0A296", fontSize: "0.6875rem" }}>{VENUES[v].notes}</p>}
-                      <a
-                        href={mapsUrl(VENUES[v])}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 mt-2 px-2.5 py-1 rounded-full font-bold"
-                        style={{ background: "#F3ECDF", color: "#C1861A", fontSize: "0.6875rem" }}
-                      >
-                        <MapPin size={11} /> נווט לשם
-                      </a>
                     </div>
                   </div>
                 </div>
