@@ -26,15 +26,30 @@ function pad(n) { return String(n).padStart(2, "0"); }
 // day-grouping we want them to stay under the evening they started - otherwise
 // browsing "Monday" wouldn't show the 00:00-02:00 tail of Monday night's
 // marathon, which several friends found confusing.
+//
+// We only shift the *display* day back when there is real evidence this is a
+// continuation of the previous evening (a same title + same venue event late
+// the day before, e.g. after 21:00). This matters for the very last festival
+// night: its closing marathon's post-midnight hours are NOT rolled forward in
+// the source data (there is no next festival day to roll into), so a blind
+// "hour < 5 -> shift back" rule would incorrectly pull it a day too early.
 function festivalDisplayDate(ev) {
   const hour = parseInt((ev.start || "00:00").split(":")[0], 10);
-  if (hour < 5) {
-    const d = new Date(`${ev.date}T00:00:00`);
-    d.setDate(d.getDate() - 1);
-    const candidate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    return DATES.includes(candidate) ? candidate : ev.date;
-  }
-  return ev.date;
+  if (hour >= 5) return ev.date;
+
+  const d = new Date(`${ev.date}T00:00:00`);
+  d.setDate(d.getDate() - 1);
+  const prevDay = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  if (!DATES.includes(prevDay)) return ev.date;
+
+  const hasEveningPredecessor = EVENTS.some(
+    (o) =>
+      o.title === ev.title &&
+      o.venueId === ev.venueId &&
+      o.date === prevDay &&
+      parseInt((o.start || "00:00").split(":")[0], 10) >= 21
+  );
+  return hasEveningPredecessor ? prevDay : ev.date;
 }
 
 const EVENTS_WITH_FDAY = EVENTS.map((e) => ({ ...e, fday: festivalDisplayDate(e) }));
@@ -156,7 +171,7 @@ function buildShareText(savedEvents, notes) {
     .map((e) => {
       const d = e.fday || e.date;
       const dateLabel = DAY_META[d] ? `${DAY_META[d].weekday} ${DAY_META[d].label}` : d;
-      const timeLabel = `${e.start}${e.end ? `–${e.end}` : ""}`;
+      const timeLabel = `\u2066${e.start}${e.end ? `-${e.end}` : ""}\u2069`;
       const venue = VENUES[e.venueId]?.name || "";
       const content =
         e.kind === "show"
@@ -287,7 +302,7 @@ function EventCard({ ev, dayColor, isSaved, onToggle, showDate, isLive, removeMo
             )}
             {/* 1. שעה + קטגוריה/סוג-פורמט */}
             <span className="flex items-center gap-1 text-xs font-bold" style={{ color }}>
-              <Clock size={12} /> {ev.start}{ev.end ? `–${ev.end}` : ""}
+              <Clock size={12} /> <bdi dir="ltr">{ev.start}{ev.end ? `-${ev.end}` : ""}</bdi>
             </span>
             <span className="px-1.5 py-0.5 rounded-full" style={{ background: "#241623", color: "#EDE3D0", fontSize: "0.625rem" }}>
               {CAT_ICON[ev.cat]} {ev.cat}
@@ -392,6 +407,36 @@ function EventCard({ ev, dayColor, isSaved, onToggle, showDate, isLive, removeMo
   );
 }
 
+// Shared "grouped by venue" list, used by both search results and the "now" tab,
+// so results are structured the same way the Program tab already shows them
+// (venue headers, in the same fixed venue order) instead of one flat list.
+function VenueGroupedEvents({ events, venueOrder, saved, onToggle, showDate, isLive }) {
+  const byVenue = {};
+  events.forEach((e) => {
+    if (!byVenue[e.venueId]) byVenue[e.venueId] = [];
+    byVenue[e.venueId].push(e);
+  });
+  return (
+    <div className="flex flex-col gap-4">
+      {venueOrder.filter((v) => byVenue[v]).map((venueId) => (
+        <div key={venueId}>
+          <div className="flex items-center gap-2 mb-2">
+            <Building2 size={13} color="#6A5A63" className="flex-shrink-0" />
+            <h3 className="font-bold truncate" style={{ color: "#241623", fontSize: "0.8125rem" }}>
+              {VENUES[venueId]?.name}
+            </h3>
+          </div>
+          <div className="flex flex-col gap-3">
+            {byVenue[venueId].map((ev) => (
+              <EventCard key={ev.id} ev={ev} isSaved={!!saved[ev.id]} onToggle={onToggle} showDate={showDate} isLive={isLive} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [selectedDate, setSelectedDate] = useState(DATES[0]);
   const [catFilter, setCatFilter] = useState("all"); // all | show | dance
@@ -459,6 +504,17 @@ export default function App() {
   const updateNote = (id, value) => setNotes((prev) => ({ ...prev, [id]: value }));
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
+  const bodyScrollRef = useRef(null);
+
+  // Scroll back to the top of the list whenever the day or category filter
+  // changes in the Program tab, so the first matching event is always the
+  // first thing visible - not wherever the previous scroll position happened
+  // to land.
+  useEffect(() => {
+    if (tab === "program" && bodyScrollRef.current) {
+      bodyScrollRef.current.scrollTo({ top: 0, behavior: "auto" });
+    }
+  }, [selectedDate, catFilter, danceSubFilter, tab]);
 
   const [tick, setTick] = useState(0);
 
@@ -600,7 +656,9 @@ export default function App() {
             <div className="min-w-0">
               <p style={{ color: "#E8A93D", fontSize: "0.6875rem", letterSpacing: "0.25em" }}>FEST · DANCE WITH LOVE</p>
               <h1 className="display-font text-3xl font-bold" style={{ color: "#FBF3E6" }}>אשדודאנס 2026</h1>
-              <p className="text-xs mt-0.5" style={{ color: "#C9BBB0" }}>27–30.7 · הפסטיבל הבינלאומי למחול · אשדוד</p>
+              <p className="text-xs mt-0.5" style={{ color: "#C9BBB0" }}>
+                <bdi dir="ltr">27-30/7</bdi> · הפסטיבל הבינלאומי למחול · אשדוד
+              </p>
             </div>
             <div className="flex gap-1.5 flex-shrink-0">
               <button
@@ -634,9 +692,11 @@ export default function App() {
                     key={d}
                     onClick={() => {
                       setSelectedDate(d);
+                      setSearchOpen(false);
                       if (tab !== "now") setTab("program");
                     }}
                     className="flex flex-col items-center gap-1 focus:outline-none"
+                    style={{ opacity: searchOpen ? 0.35 : 1, transition: "opacity 0.15s" }}
                   >
                     <span
                       className="w-11 h-11 rounded-full flex items-center justify-center text-sm font-bold transition-transform"
@@ -671,6 +731,7 @@ export default function App() {
                   key={f.key}
                   onClick={() => {
                     setCatFilter(f.key);
+                    setSearchOpen(false);
                     setTab("program");
                   }}
                   className="flex-1 py-1.5 rounded-full font-bold text-center"
@@ -678,6 +739,8 @@ export default function App() {
                     background: active ? "#E8A93D" : "#3A2C42",
                     color: active ? "#241623" : "#C9BBB0",
                     fontSize: "0.6875rem",
+                    opacity: searchOpen ? 0.35 : 1,
+                    transition: "opacity 0.15s",
                   }}
                 >
                   {f.label}
@@ -698,12 +761,17 @@ export default function App() {
                 return (
                   <button
                     key={f.key}
-                    onClick={() => setDanceSubFilter(f.key)}
+                    onClick={() => {
+                      setDanceSubFilter(f.key);
+                      setSearchOpen(false);
+                    }}
                     className="flex-1 py-1 rounded-full font-bold text-center"
                     style={{
                       background: active ? "#E8A93D99" : "#3A2C4288",
                       color: active ? "#241623" : "#C9BBB0",
                       fontSize: "0.625rem",
+                      opacity: searchOpen ? 0.35 : 1,
+                      transition: "opacity 0.15s",
                     }}
                   >
                     {f.label}
@@ -723,7 +791,7 @@ export default function App() {
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto no-scrollbar" style={{ background: "#FBF3E6" }}>
+        <div ref={bodyScrollRef} className="flex-1 overflow-y-auto no-scrollbar" style={{ background: "#FBF3E6" }}>
           {searchOpen && (
             <div className="px-5 py-4">
               <input
@@ -746,9 +814,13 @@ export default function App() {
               ) : (
                 <div className="flex flex-col gap-3">
                   <p style={{ color: "#8A7B84", fontSize: "0.6875rem" }}>{searchResults.length} תוצאות</p>
-                  {searchResults.map((ev) => (
-                    <EventCard key={ev.id} ev={ev} isSaved={!!saved[ev.id]} onToggle={toggleSave} showDate />
-                  ))}
+                  <VenueGroupedEvents
+                    events={searchResults}
+                    venueOrder={ALL_VENUE_ORDER}
+                    saved={saved}
+                    onToggle={toggleSave}
+                    showDate
+                  />
                 </div>
               )}
             </div>
@@ -802,10 +874,14 @@ export default function App() {
                   אין אירוע פעיל כרגע בשעה הזו. בדקי את "בקרוב" למטה.
                 </div>
               ) : (
-                <div className="flex flex-col gap-3 mb-5">
-                  {liveNow.map((ev) => (
-                    <EventCard key={ev.id} ev={ev} isSaved={!!saved[ev.id]} onToggle={toggleSave} isLive />
-                  ))}
+                <div className="mb-5">
+                  <VenueGroupedEvents
+                    events={liveNow}
+                    venueOrder={ALL_VENUE_ORDER}
+                    saved={saved}
+                    onToggle={toggleSave}
+                    isLive
+                  />
                 </div>
               )}
 
@@ -815,11 +891,13 @@ export default function App() {
                   אין אירועים שמתחילים בשעתיים הקרובות.
                 </div>
               ) : (
-                <div className="flex flex-col gap-3">
-                  {upcoming.map((ev) => (
-                    <EventCard key={ev.id} ev={ev} isSaved={!!saved[ev.id]} onToggle={toggleSave} showDate />
-                  ))}
-                </div>
+                <VenueGroupedEvents
+                  events={upcoming}
+                  venueOrder={ALL_VENUE_ORDER}
+                  saved={saved}
+                  onToggle={toggleSave}
+                  showDate
+                />
               )}
             </div>
           )}
@@ -961,7 +1039,10 @@ export default function App() {
         {/* Floating "My Schedule" button */}
         {tab !== "myschedule" && (
           <button
-            onClick={() => setTab("myschedule")}
+            onClick={() => {
+              setTab("myschedule");
+              setSearchOpen(false);
+            }}
             className="absolute bottom-24 left-4 w-14 h-14 rounded-full flex items-center justify-center shadow-xl z-30"
             style={{ background: "#E8A93D" }}
             aria-label="הלו״ז שלי"
@@ -1037,7 +1118,10 @@ export default function App() {
             return (
               <button
                 key={key}
-                onClick={() => setTab(key)}
+                onClick={() => {
+                  setTab(key);
+                  setSearchOpen(false);
+                }}
                 className="flex flex-col items-center gap-0.5 py-1 px-2.5 rounded-xl"
                 style={{ color: active ? "#C81D3E" : "#B0A296" }}
               >
@@ -1047,6 +1131,18 @@ export default function App() {
             );
           })}
         </div>
+
+        {/* Fixed credit line - tap to jump to the About tab */}
+        <button
+          onClick={() => {
+            setTab("about");
+            setSearchOpen(false);
+          }}
+          className="flex-shrink-0 w-full text-center py-1.5"
+          style={{ background: "#FFFFFF", color: "#B0A296", fontSize: "0.625rem", borderTop: "1px solid #EEE3D3" }}
+        >
+          אלי שבמנאו | ESAC-SMART 2026©
+        </button>
       </div>
     </div>
   );
