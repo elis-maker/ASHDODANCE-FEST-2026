@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { track } from "@vercel/analytics";
-import { Heart, Calendar, MapPin, X, Building2, Clock, Share2, Zap, Pencil, Info, Search, Type } from "lucide-react";
+import { Heart, Calendar, MapPin, X, Building2, Clock, Share2, Zap, Pencil, Info, Search, Type, Navigation, Phone, Globe } from "lucide-react";
 
 const STORAGE_KEY_SAVED = "ashdodance2026:saved";
 const STORAGE_KEY_NOTES = "ashdodance2026:notes";
@@ -167,6 +167,21 @@ function mapsUrl(venue) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${venue.name}, ${venue.address}`)}`;
 }
 
+// Waze's universal link: opens the Waze app if installed, otherwise falls back
+// to Waze's own web page (which then offers the app). We search by the same
+// "name, address" string used for Google Maps so both behave identically.
+function wazeUrl(venue) {
+  return `https://waze.com/ul?q=${encodeURIComponent(`${venue.name}, ${venue.address}`)}&navigate=yes`;
+}
+
+// Short labels for the venue filter row - the full names are far too long to
+// fit four buttons across a phone width.
+const VENUE_SHORT = {
+  "hekhal-hakirya": "הקריה",
+  "yovel": "היובל",
+  "cafe-theater-yad-labanim": "קפה תיאטרון",
+};
+
 function buildShareText(savedEvents, notes) {
   return savedEvents
     .map((e) => {
@@ -261,7 +276,7 @@ function fmtDateHe(dateStr) {
   return meta ? `${meta.weekday} ${meta.label}` : dateStr;
 }
 
-function EventCard({ ev, dayColor, isSaved, onToggle, showDate, isLive, removeMode, conflict, checkbox, checked, onCheckToggle, children }) {
+function EventCard({ ev, dayColor, isSaved, onToggle, onNavigate, showDate, isLive, removeMode, conflict, checkbox, checked, onCheckToggle, children }) {
   const color = dayColor || (DAY_META[ev.fday || ev.date] ? DAY_META[ev.fday || ev.date].color : "#241623");
   const venue = VENUES[ev.venueId];
   return (
@@ -334,15 +349,13 @@ function EventCard({ ev, dayColor, isSaved, onToggle, showDate, isLive, removeMo
               )}
               {/* 5. מתחם */}
               {venue && (
-                <a
-                  href={mapsUrl(venue)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1 mt-1 w-fit"
+                <button
+                  onClick={() => onNavigate && onNavigate(venue)}
+                  className="flex items-center gap-1 mt-1 w-fit text-right"
                   style={{ color: "#6B5B63", fontSize: "0.75rem", textDecoration: "underline" }}
                 >
                   <MapPin size={11} className="flex-shrink-0" /> {venue.name}
-                </a>
+                </button>
               )}
               {/* 6. תוכן עמודת "כניסה והערות" */}
               {ev.notes && (
@@ -367,15 +380,13 @@ function EventCard({ ev, dayColor, isSaved, onToggle, showDate, isLive, removeMo
                 </p>
               )}
               {venue && (
-                <a
-                  href={mapsUrl(venue)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1 mt-1 w-fit"
+                <button
+                  onClick={() => onNavigate && onNavigate(venue)}
+                  className="flex items-center gap-1 mt-1 w-fit text-right"
                   style={{ color: "#6B5B63", fontSize: "0.75rem", textDecoration: "underline" }}
                 >
                   <MapPin size={11} className="flex-shrink-0" /> {venue.name}
-                </a>
+                </button>
               )}
             </>
           )}
@@ -411,7 +422,7 @@ function EventCard({ ev, dayColor, isSaved, onToggle, showDate, isLive, removeMo
 // Shared "grouped by venue" list, used by both search results and the "now" tab,
 // so results are structured the same way the Program tab already shows them
 // (venue headers, in the same fixed venue order) instead of one flat list.
-function VenueGroupedEvents({ events, venueOrder, saved, onToggle, showDate, isLive }) {
+function VenueGroupedEvents({ events, venueOrder, saved, onToggle, onNavigate, showDate, isLive }) {
   const byVenue = {};
   events.forEach((e) => {
     if (!byVenue[e.venueId]) byVenue[e.venueId] = [];
@@ -429,7 +440,7 @@ function VenueGroupedEvents({ events, venueOrder, saved, onToggle, showDate, isL
           </div>
           <div className="flex flex-col gap-3">
             {byVenue[venueId].map((ev) => (
-              <EventCard key={ev.id} ev={ev} isSaved={!!saved[ev.id]} onToggle={onToggle} showDate={showDate} isLive={isLive} />
+              <EventCard key={ev.id} ev={ev} isSaved={!!saved[ev.id]} onToggle={onToggle} onNavigate={onNavigate} showDate={showDate} isLive={isLive} />
             ))}
           </div>
         </div>
@@ -442,6 +453,12 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState(DATES[0]);
   const [catFilter, setCatFilter] = useState("all"); // all | show | dance
   const [danceSubFilter, setDanceSubFilter] = useState("all"); // all | מעגלים | זוגות | משולב
+  const [venueFilter, setVenueFilter] = useState("all"); // all | venueId - only applied while catFilter === "dance"
+  // Filter rows collapse while scrolling down and come straight back on any
+  // upward scroll, so the list gets the screen space but the controls are never
+  // more than a flick away. The day selector is deliberately NOT part of this.
+  const [filtersVisible, setFiltersVisible] = useState(true);
+  const [navTarget, setNavTarget] = useState(null); // venue object -> shows the Maps/Waze picker
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [bigText, setBigText] = useState(false);
@@ -527,6 +544,20 @@ export default function App() {
   const toastTimer = useRef(null);
   const bodyScrollRef = useRef(null);
 
+  // About-tab section anchors. We scroll the inner container by computed offset
+  // rather than using scrollIntoView, because scrollIntoView on a nested
+  // scroller also nudges the outer page on some mobile browsers.
+  const aboutFestivalRef = useRef(null);
+  const aboutGuideRef = useRef(null);
+  const aboutMeRef = useRef(null);
+  const scrollToAboutSection = (ref) => {
+    const container = bodyScrollRef.current;
+    const target = ref.current;
+    if (!container || !target) return;
+    const top = target.offsetTop - container.offsetTop - 44; // clear the sticky jump bar
+    container.scrollTo({ top: top > 0 ? top : 0, behavior: "smooth" });
+  };
+
   // Scroll back to the top of the list whenever the day or category filter
   // changes in the Program tab, so the first matching event is always the
   // first thing visible - not wherever the previous scroll position happened
@@ -535,7 +566,31 @@ export default function App() {
     if (tab === "program" && bodyScrollRef.current) {
       bodyScrollRef.current.scrollTo({ top: 0, behavior: "auto" });
     }
-  }, [selectedDate, catFilter, danceSubFilter, tab]);
+    // Any deliberate change of day/filter/tab means the user is working with the
+    // controls - always put them back in view, whatever the scroll state was.
+    setFiltersVisible(true);
+  }, [selectedDate, catFilter, danceSubFilter, venueFilter, tab]);
+
+  // Hide the filter rows while scrolling down, restore them on the first upward
+  // scroll. The 8px tolerance stops tiny finger jitter from flickering the rows,
+  // and the 48px floor keeps them visible near the top of the list where there
+  // is no space pressure anyway.
+  useEffect(() => {
+    const el = bodyScrollRef.current;
+    if (!el) return;
+    let lastY = el.scrollTop;
+    const onScroll = () => {
+      const y = el.scrollTop;
+      const delta = y - lastY;
+      if (Math.abs(delta) < 8) return; // ignore jitter, keep lastY as the anchor
+      if (y < 48) setFiltersVisible(true);
+      else if (delta > 0) setFiltersVisible(false);
+      else setFiltersVisible(true);
+      lastY = y;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
   const [tick, setTick] = useState(0);
 
@@ -605,6 +660,8 @@ export default function App() {
     if (catFilter === "all") return true;
     if (catFilter === "show") return ev.cat === "מופע מרכזי";
     if (ev.cat === "מופע מרכזי") return false; // "dance"
+    // The venue row only exists under "dance", so it only filters there.
+    if (venueFilter !== "all" && ev.venueId !== venueFilter) return false;
     if (danceSubFilter === "all") return true;
     return ev.cat === danceSubFilter;
   };
@@ -638,7 +695,24 @@ export default function App() {
       groups[e.venueId].push(e);
     });
     return groups;
-  }, [selectedDate, catFilter, danceSubFilter]);
+  }, [selectedDate, catFilter, danceSubFilter, venueFilter]);
+
+  // How many dance events each venue has on the selected day, honouring the
+  // type sub-filter. Used to dim venue buttons that would lead to an empty
+  // screen - on 27.7, for instance, only היכל הקריה has any dancing at all.
+  const venueCounts = useMemo(() => {
+    const counts = {};
+    DANCE_VENUE_ORDER.forEach((v) => {
+      counts[v] = EVENTS_WITH_FDAY.filter(
+        (e) =>
+          e.fday === selectedDate &&
+          e.cat !== "מופע מרכזי" &&
+          e.venueId === v &&
+          (danceSubFilter === "all" || e.cat === danceSubFilter)
+      ).length;
+    });
+    return counts;
+  }, [selectedDate, danceSubFilter]);
 
   const { liveNow, upcoming } = useMemo(() => {
     const all = [...EVENTS_WITH_FDAY];
@@ -761,7 +835,20 @@ export default function App() {
             </div>
           </div>
 
-          {/* Category filter row - always visible, filters the Program tab for the selected day */}
+          {/* Collapsible filter block. Animating max-height (rather than
+              unmounting) keeps the transition smooth and avoids the list
+              jumping when the rows come back. 168px comfortably clears all
+              three rows (~110px) even at the enlarged text size. */}
+          <div
+            style={{
+              maxHeight: filtersVisible ? "180px" : "0px",
+              opacity: filtersVisible ? 1 : 0,
+              overflow: "hidden",
+              transition: "max-height 0.22s ease, opacity 0.18s ease",
+              pointerEvents: filtersVisible ? "auto" : "none",
+            }}
+          >
+          {/* Category filter row - filters the Program tab for the selected day */}
           <div className="mt-3 flex gap-1.5">
             {[
               { key: "show", label: "מופעים" },
@@ -824,6 +911,41 @@ export default function App() {
             </div>
           )}
 
+          {/* Venue row - only under "dance", and it stacks WITH the type filter
+              above (e.g. "זוגות" + "היובל"), it does not replace it. */}
+          {catFilter === "dance" && (
+            <div className="mt-1.5 flex gap-1.5">
+              {[
+                { key: "all", label: "כל המתחמים" },
+                ...DANCE_VENUE_ORDER.map((v) => ({ key: v, label: VENUE_SHORT[v] })),
+              ].map((f) => {
+                const active = venueFilter === f.key;
+                const empty = f.key !== "all" && venueCounts[f.key] === 0;
+                return (
+                  <button
+                    key={f.key}
+                    onClick={() => {
+                      setVenueFilter(f.key);
+                      setSearchOpen(false);
+                    }}
+                    className="flex-1 py-1 rounded-full font-bold text-center"
+                    style={{
+                      background: active ? "#E8A93D66" : "#3A2C4266",
+                      color: active ? "#FBF3E6" : "#9C8F97",
+                      fontSize: "0.5938rem",
+                      paddingInline: "2px",
+                      opacity: searchOpen ? 0.35 : empty ? 0.4 : 1,
+                      transition: "opacity 0.15s",
+                    }}
+                  >
+                    {f.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          </div>
+
           {tab === "now" && (
             <div className="mt-4 rounded-xl p-3 flex items-center gap-2" style={{ background: "#3A2C42" }}>
               <span className="flex items-center gap-1 text-xs font-bold" style={{ color: "#E8A93D" }}>
@@ -862,6 +984,7 @@ export default function App() {
                     venueOrder={ALL_VENUE_ORDER}
                     saved={saved}
                     onToggle={toggleSave}
+                    onNavigate={setNavTarget}
                     showDate
                   />
                 </div>
@@ -891,7 +1014,7 @@ export default function App() {
                   </div>
                   <div className="px-5 py-3 flex flex-col gap-3">
                     {dayEventsByVenue[venueId].map((ev) => (
-                      <EventCard key={ev.id} ev={ev} dayColor={dayColor} isSaved={!!saved[ev.id]} onToggle={toggleSave} />
+                      <EventCard key={ev.id} ev={ev} dayColor={dayColor} isSaved={!!saved[ev.id]} onToggle={toggleSave} onNavigate={setNavTarget} />
                     ))}
                   </div>
                 </div>
@@ -900,6 +1023,8 @@ export default function App() {
                 <div className="px-5 py-16 text-center" style={{ color: "#8A7B84" }}>
                   {catFilter === "all"
                     ? "אין אירועים רשומים ליום זה עדיין."
+                    : catFilter === "dance" && (venueFilter !== "all" || danceSubFilter !== "all")
+                    ? "אין הרקדות שמתאימות לסינון הזה ביום שנבחר. נסי לשנות את סוג ההרקדה או את המתחם."
                     : `אין אירועי "${catFilter === "show" ? "מופעים" : "הרקדות"}" ביום זה. נסי את "כלל האירועים".`}
                 </div>
               )}
@@ -923,6 +1048,7 @@ export default function App() {
                     venueOrder={ALL_VENUE_ORDER}
                     saved={saved}
                     onToggle={toggleSave}
+                    onNavigate={setNavTarget}
                     isLive
                   />
                 </div>
@@ -939,6 +1065,7 @@ export default function App() {
                   venueOrder={ALL_VENUE_ORDER}
                   saved={saved}
                   onToggle={toggleSave}
+                    onNavigate={setNavTarget}
                   showDate
                 />
               )}
@@ -1013,6 +1140,7 @@ export default function App() {
                             ev={ev}
                             isSaved
                             onToggle={toggleSave}
+                            onNavigate={setNavTarget}
                             removeMode
                             conflict={conflicts.has(ev.id)}
                             checkbox
@@ -1050,15 +1178,13 @@ export default function App() {
                       <p className="font-bold text-sm" style={{ color: "#241623" }}>{VENUES[v].name}</p>
                       <p className="text-xs mt-0.5" style={{ color: "#8A7B84" }}>{VENUES[v].address}</p>
                       {VENUES[v].notes && <p className="mt-1" style={{ color: "#B0A296", fontSize: "0.6875rem" }}>{VENUES[v].notes}</p>}
-                      <a
-                        href={mapsUrl(VENUES[v])}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        onClick={() => setNavTarget(VENUES[v])}
                         className="inline-flex items-center gap-1 mt-2 px-2.5 py-1 rounded-full font-bold"
                         style={{ background: "#F3ECDF", color: "#C1861A", fontSize: "0.6875rem" }}
                       >
                         <MapPin size={11} /> נווט לשם
-                      </a>
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1067,104 +1193,180 @@ export default function App() {
           )}
 
           {tab === "about" && (
-            <div className="px-5 py-4 flex flex-col gap-5">
-              {/* חלק 1 - הסיפור האישי */}
-              <div className="rounded-xl p-4" style={{ background: "#241623" }}>
-                <p className="leading-relaxed" style={{ color: "#EDE3D0", fontSize: "0.8125rem" }}>
-                  חבריי, חברותיי וכל קהילת הרוקדים באי פסטיבל אשדודאנס שלום!
-                </p>
-                <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
-                  בהיותי אשדודי גאה, שמאוד אוהב לרקוד בכלל וריקודי עם בפרט, מאז שחזרתי לרחבה אני מקפיד להגיע לפסטיבל אשדודאנס ולהשתתף בכמה שיותר אירועים המתקיימים במסגרת הפסטיבל.
-                </p>
-                <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
-                  מאחר שהפסטיבל כולל מדי שנה למעלה מ-100 אירועי הרקדות ומופעים, תמיד התקשיתי לנהל מעקב אחר הבחירות שלי (באילו אירועים אני רוצה להשתתף), נוצרו לי התנגשויות בין אירועים שבחרתי וגם יותר מפעם אחת תיאמתי עם שתי בנות זוג להרקדה זוגות ספציפית (כן כן... זה ממש לא נעים).
-                </p>
-                <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
-                  לכן, השנה החלטתי לפנק את עצמי, את חבריי וחברותיי ואת כל קהילת הרוקדים באי הפסטיבל, ובניתי אפליקציה ידידותית ופשוטה לשימוש, המציגה את כל תכני הפסטיבל וכן מאפשרת לבחור את האירועים שכל אחד מאיתנו מעוניין להשתתף בהם, לנהל מעקב, לכתוב הערות אישיות לכל אירוע ("זוגות עם דניאל"), להכניס ליומן ואף לשתף את החברים והחברות באירועים שבחרנו.
-                </p>
-                <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
-                  האפליקציה הינה חינמית ומוגשת לשימושכם האישי ללא צורך ברישום או תשלום כלשהו...
-                </p>
-                <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
-                  האפליקציה נבנתה באהבה בהתבסס על המידע שפורסם לציבור על פסטיבל אשדודאנס. היא מוגשת ללא עלות, לנוחות חבריי וחברותיי וכל מי שמעוניין להשתמש בה. ייתכנו שינויים או אי־דיוקים, ולכן מומלץ להתעדכן גם בפרסומים הרשמיים של הפסטיבל:{" "}
-                  <a href="https://www.ashdodance.co.il" target="_blank" rel="noopener noreferrer" style={{ color: "#E8A93D", textDecoration: "underline" }}>
-                    WWW.ASHDODANCE.CO.IL
-                  </a>
-                </p>
-                <p className="leading-relaxed mt-3 font-bold" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
-                  מאחל לכולנו פסטיבל מלא באירועים טובים, בא.נשים מוארים באושר ושמחה, בריקודים בלי סוף
-                  <br />
-                  והעיקר... תרקדו את הלב שלכם
-                </p>
+            <div className="pb-4">
+              {/* Jump bar - sticky so the three sections stay one tap apart
+                  however far down the tab you are. */}
+              <div
+                className="sticky top-0 z-10 px-5 py-2.5 flex gap-1.5 backdrop-blur"
+                style={{ background: "#FBF3E6EE", borderBottom: "1px solid #E3D9C8" }}
+              >
+                {[
+                  { label: "על הפסטיבל", ref: aboutFestivalRef },
+                  { label: "מדריך שימוש", ref: aboutGuideRef },
+                  { label: "אודותיי", ref: aboutMeRef },
+                ].map((s) => (
+                  <button
+                    key={s.label}
+                    onClick={() => scrollToAboutSection(s.ref)}
+                    className="flex-1 py-1.5 rounded-full font-bold text-center"
+                    style={{ background: "#241623", color: "#EDE3D0", fontSize: "0.6875rem" }}
+                  >
+                    {s.label}
+                  </button>
+                ))}
               </div>
 
-              {/* חלק 2 - האיור האישי */}
-              <div className="flex flex-col items-center">
-                <img
-                  src="/images/signature.png"
-                  alt="איור אישי - תרקוד את הלב שלך"
-                  style={{ width: "170px", height: "auto" }}
-                />
-                <p className="display-font mt-1" style={{ color: "#241623", fontSize: "1.05rem" }}>
-                  תרקוד את הלב שלך
-                </p>
-              </div>
+              <div className="px-5 pt-4 flex flex-col gap-5">
+                {/* ===== מקטע 1 - על הפסטיבל ===== */}
+                <div ref={aboutFestivalRef}>
+                  <h2 className="display-font font-bold mb-3" style={{ color: "#241623", fontSize: "1.15rem" }}>
+                    על הפסטיבל
+                  </h2>
+                  <p className="leading-relaxed" style={{ color: "#4A3A44", fontSize: "0.75rem" }}>
+                    כבר תשע שנים ברציפות שבקיץ, למשך כמה ימים, אשדוד הופכת לבמה גדולה של קצב, צבע ותנועה. להקות, יוצרים ורקדנים מכל רחבי הארץ ומהעולם מגיעים אל העיר, ומביאים עמם קהל ותיק לצד קהל חדש.
+                  </p>
+                  <p className="leading-relaxed mt-3" style={{ color: "#4A3A44", fontSize: "0.75rem" }}>
+                    השנה מקבל הפסטיבל רובד נוסף של משמעות. אשדוד מציינת שבעים שנים להיווסדה, ואשדודאנס מצטרף לציון הדרך הזה עם הפקות גדולות, יצירה מקורית ומפגשים אמנותיים שמחברים בין מסורת לחדשנות. אל התכנית מצטרפות הפקות בינלאומיות לצד יצירות מקור שנוצרו במיוחד לפסטיבל.
+                  </p>
+                  <p className="leading-relaxed mt-3" style={{ color: "#4A3A44", fontSize: "0.75rem" }}>
+                    ובדיוק בימים האלה מגיע גם ט״ו באב, חג האהבה העברי. כמו אז, כשהיו יוצאים לרקוד בכרמים, גם כאן המפגש האנושי עומד במרכז.
+                  </p>
+                  <p className="display-font mt-3" style={{ color: "#241623", fontSize: "1rem" }}>
+                    ברוכים הבאים לאשדודאנס.
+                  </p>
 
-              {/* חלק 3 - יצירת קשר */}
-              <div className="rounded-xl p-4 text-center" style={{ background: "#F3ECDF" }}>
-                <p className="leading-relaxed" style={{ color: "#4A3A44", fontSize: "0.75rem" }}>
-                  מוזמנים לכתוב לי תגובות, הערות, הארות, רעיונות לשיפור וכל מה שתרצו לשתף איתי.
-                </p>
-                <p className="mt-2" style={{ color: "#8A7B84", fontSize: "0.6875rem" }}>
-                  אלי שבמנאו ·{" "}
-                  <a href="mailto:ELI.S@ESAC-SMART.CO.IL" style={{ color: "#C1861A", textDecoration: "underline" }}>
-                    ELI.S@ESAC-SMART.CO.IL
-                  </a>
-                </p>
-              </div>
+                  {/* Official contact - deliberately prominent: this is where we
+                      send anyone who needs tickets or authoritative details. */}
+                  <div className="flex gap-2 mt-4">
+                    <a
+                      href="https://www.ashdodance.co.il"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-xl py-3 font-bold"
+                      style={{ background: "#E8A93D", color: "#241623", fontSize: "0.75rem" }}
+                    >
+                      <Globe size={14} className="flex-shrink-0" /> האתר הרשמי
+                    </a>
+                    <a
+                      href="tel:089522242"
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-xl py-3 font-bold"
+                      style={{ background: "#241623", color: "#FBF3E6", fontSize: "0.75rem" }}
+                    >
+                      <Phone size={14} className="flex-shrink-0" /> <bdi dir="ltr">08-9522242</bdi>
+                    </a>
+                  </div>
+                  <p className="text-center mt-2" style={{ color: "#8A7B84", fontSize: "0.6562rem" }}>
+                    מידע וכרטיסים למופעים בתשלום
+                  </p>
+                </div>
 
-              {/* חלק 4 - קו מפריד + מדריך שימוש */}
-              <div style={{ borderTop: "1px solid #E3D9C8" }} />
-              <div>
-                <h2 className="display-font font-bold mb-3" style={{ color: "#241623", fontSize: "1.15rem" }}>
-                  מדריך שימוש
-                </h2>
+                <div style={{ borderTop: "1px solid #E3D9C8" }} />
 
-                <div className="flex flex-col gap-3">
-                  <div>
-                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>א. מסך הפתיחה - תוכנייה</h3>
-                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
-                      בוחרים יום מתוך בורר הימים הצבעוני (27.7–30.7). שלושת הכפתורים למטה מסננים בין <b>מופעים</b>, <b>הרקדות</b> או <b>כלל האירועים</b>. כשבוחרים "הרקדות" נפתחת שורת תת-סינון נוספת: <b>מעגלים</b> / <b>זוגות</b> / <b>משולב</b>. כפתור החיפוש (🔍) בכותרת מחפש חופשי בכל 116 האירועים - לפי שם, מדריך/אמן, אולם, או אפילו מילה כמו "נוסטלגיה". כפתור "Aa" מגדיל את כל הטקסטים באפליקציה.
+                {/* ===== מקטע 2 - מדריך שימוש ===== */}
+                <div ref={aboutGuideRef}>
+                  <h2 className="display-font font-bold mb-3" style={{ color: "#241623", fontSize: "1.15rem" }}>
+                    מדריך שימוש
+                  </h2>
+
+                  <div className="flex flex-col gap-3">
+                    <div>
+                      <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>א. מסך הפתיחה - תוכנייה</h3>
+                      <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                        בוחרים יום מתוך בורר הימים הצבעוני (27.7–30.7). שלושת הכפתורים למטה מסננים בין <b>מופעים</b>, <b>הרקדות</b> או <b>כלל האירועים</b>. כשבוחרים "הרקדות" נפתחות שתי שורות סינון נוספות: לפי סוג (<b>מעגלים</b> / <b>זוגות</b> / <b>משולב</b>) ולפי <b>מתחם</b> - והן פועלות יחד, כך שאפשר לבקש למשל "זוגות בהיכל הקריה". בזמן גלילה למטה שורות הסינון מתקפלות כדי לפנות מקום לתוכן, וגלילה קלה למעלה מחזירה אותן מיד. בורר הימים תמיד נשאר.
+                      </p>
+                    </div>
+                    <div>
+                      <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ב. חיפוש וטקסט גדול</h3>
+                      <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                        כפתור החיפוש (🔍) בכותרת מחפש חופשי בכל 116 האירועים - לפי שם, מדריך/אמן, אולם, או אפילו מילה כמו "נוסטלגיה". כפתור "Aa" מגדיל את כל הטקסטים באפליקציה.
+                      </p>
+                    </div>
+                    <div>
+                      <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ג. שריון אירועים</h3>
+                      <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                        לוחצים על הלב ❤️ בכל כרטיס כדי לשמור אירוע ללו"ז האישי. הכפתור הצף בפינה נותן גישה מיידית ללו"ז השמור, מכל מסך באפליקציה.
+                      </p>
+                    </div>
+                    <div>
+                      <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ד. הלו"ז שלי</h3>
+                      <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                        אפשר להוסיף הערה אישית קצרה לכל אירוע שמור (למשל "זוגות עם דניאל"). תיבות הסימון ליד כל אירוע, ו"בחר הכל", קובעות מה נכלל בשיתוף או בייצוא ליומן. כפתור השיתוף שולח את הלו"ז כטקסט מוכן לוואטסאפ. אפשר גם להוסיף כל אירוע ליומן Google בנפרד, או לייצא ליומן את כל הרשימה המסומנת בבת אחת. אירועים חופפים בזמן מסומנים באזהרה.
+                      </p>
+                    </div>
+                    <div>
+                      <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ה. ניווט לאולמות</h3>
+                      <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                        לחיצה על שם המתחם בכרטיס אירוע, או על "נווט לשם" בטאב <b>אולמות</b>, פותחת בחירה בין <b>Google Maps</b> ל-<b>Waze</b>.
+                      </p>
+                    </div>
+                    <div>
+                      <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ו. טאב "עכשיו"</h3>
+                      <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                        מציג מה קורה ממש כרגע, ומה מתחיל בשעתיים הקרובות - בזמן אמת.
+                      </p>
+                    </div>
+                    <div>
+                      <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ז. טאב "אולמות"</h3>
+                      <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
+                        כל כתובות האולמות במקום אחד, עם כפתור ניווט לכל אחד מהם.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ borderTop: "1px solid #E3D9C8" }} />
+
+                {/* ===== מקטע 3 - אודותיי ===== */}
+                <div ref={aboutMeRef} className="flex flex-col gap-5">
+                  <div className="rounded-xl p-4" style={{ background: "#241623" }}>
+                    <p className="leading-relaxed" style={{ color: "#EDE3D0", fontSize: "0.8125rem" }}>
+                      חבריי, חברותיי וכל קהילת הרוקדים באי פסטיבל אשדודאנס שלום!
+                    </p>
+                    <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                      בהיותי אשדודי גאה, שמאוד אוהב לרקוד בכלל וריקודי עם בפרט, מאז שחזרתי לרחבה אני מקפיד להגיע לפסטיבל אשדודאנס ולהשתתף בכמה שיותר אירועים המתקיימים במסגרת הפסטיבל.
+                    </p>
+                    <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                      מאחר שהפסטיבל כולל מדי שנה למעלה מ-100 אירועי הרקדות ומופעים, תמיד התקשיתי לנהל מעקב אחר הבחירות שלי (באילו אירועים אני רוצה להשתתף), נוצרו לי התנגשויות בין אירועים שבחרתי וגם יותר מפעם אחת תיאמתי עם שתי בנות זוג להרקדה זוגות ספציפית (כן כן... זה ממש לא נעים).
+                    </p>
+                    <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                      לכן, השנה החלטתי לפנק את עצמי, את חבריי וחברותיי ואת כל קהילת הרוקדים באי הפסטיבל, ובניתי אפליקציה ידידותית ופשוטה לשימוש, המציגה את כל תכני הפסטיבל וכן מאפשרת לבחור את האירועים שכל אחד מאיתנו מעוניין להשתתף בהם, לנהל מעקב, לכתוב הערות אישיות לכל אירוע ("זוגות עם דניאל"), להכניס ליומן ואף לשתף את החברים והחברות באירועים שבחרנו.
+                    </p>
+                    <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                      האפליקציה הינה חינמית ומוגשת לשימושכם האישי ללא צורך ברישום או תשלום כלשהו...
+                    </p>
+                    <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                      האפליקציה נבנתה באהבה בהתבסס על המידע שפורסם לציבור על פסטיבל אשדודאנס. היא מוגשת ללא עלות, לנוחות חבריי וחברותיי וכל מי שמעוניין להשתמש בה. ייתכנו שינויים או אי־דיוקים, ולכן מומלץ להתעדכן גם בפרסומים הרשמיים של הפסטיבל:{" "}
+                      <a href="https://www.ashdodance.co.il" target="_blank" rel="noopener noreferrer" style={{ color: "#E8A93D", textDecoration: "underline" }}>
+                        WWW.ASHDODANCE.CO.IL
+                      </a>
+                    </p>
+                    <p className="leading-relaxed mt-3 font-bold" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                      מאחל לכולנו פסטיבל מלא באירועים טובים, בא.נשים מוארים באושר ושמחה, בריקודים בלי סוף
+                      <br />
+                      והעיקר... תרקדו את הלב שלכם
                     </p>
                   </div>
-                  <div>
-                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ב. שריון אירועים</h3>
-                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
-                      לוחצים על הלב ❤️ בכל כרטיס כדי לשמור אירוע ללו"ז האישי. הכפתור הצף בפינה נותן גישה מיידית ללו"ז השמור, מכל מסך באפליקציה.
+
+                  <div className="flex flex-col items-center">
+                    <img
+                      src="/images/signature.png"
+                      alt="איור אישי - תרקוד את הלב שלך"
+                      style={{ width: "170px", height: "auto" }}
+                    />
+                    <p className="display-font mt-1" style={{ color: "#241623", fontSize: "1.05rem" }}>
+                      תרקוד את הלב שלך
                     </p>
                   </div>
-                  <div>
-                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ג. הלו"ז שלי</h3>
-                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
-                      אפשר להוסיף הערה אישית קצרה לכל אירוע שמור (למשל "זוגות עם דניאל"). תיבות הסימון ליד כל אירוע, ו"בחר הכל", קובעות מה נכלל בשיתוף או בייצוא ליומן. כפתור השיתוף שולח את הלו"ז כטקסט מוכן לוואטסאפ. אפשר גם להוסיף כל אירוע ליומן Google בנפרד, או לייצא ליומן את כל הרשימה המסומנת בבת אחת. אירועים חופפים בזמן מסומנים באזהרה.
+
+                  <div className="rounded-xl p-4 text-center" style={{ background: "#F3ECDF" }}>
+                    <p className="leading-relaxed" style={{ color: "#4A3A44", fontSize: "0.75rem" }}>
+                      מוזמנים לכתוב לי תגובות, הערות, הארות, רעיונות לשיפור וכל מה שתרצו לשתף איתי.
                     </p>
-                  </div>
-                  <div>
-                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ד. טאב "עכשיו"</h3>
-                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
-                      מציג מה קורה ממש כרגע, ומה מתחיל בשעתיים הקרובות - בזמן אמת.
-                    </p>
-                  </div>
-                  <div>
-                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ה. טאב "אולמות"</h3>
-                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
-                      כל כתובות האולמות במקום אחד, עם כפתור ניווט ישיר לגוגל מפות.
-                    </p>
-                  </div>
-                  <div>
-                    <h3 className="font-bold" style={{ color: "#241623", fontSize: "0.8125rem" }}>ו. טאב "אודות"</h3>
-                    <p className="mt-1 leading-relaxed" style={{ color: "#6B5B63", fontSize: "0.75rem" }}>
-                      המסך שאתם בו עכשיו - מידע כללי ופרטי יצירת קשר.
+                    <p className="mt-2" style={{ color: "#8A7B84", fontSize: "0.6875rem" }}>
+                      אלי שבמנאו ·{" "}
+                      <a href="mailto:ELI.S@ESAC-SMART.CO.IL" style={{ color: "#C1861A", textDecoration: "underline" }}>
+                        ELI.S@ESAC-SMART.CO.IL
+                      </a>
                     </p>
                   </div>
                 </div>
@@ -1205,6 +1407,64 @@ export default function App() {
             style={{ background: "#241623", color: "#FBF3E6" }}
           >
             {toast}
+          </div>
+        )}
+
+        {/* Navigation app picker. A bottom sheet rather than a centre modal:
+            this is a one-tap "open with" choice, and the sheet is the pattern
+            both iOS and Android already use for exactly that. Tapping the dim
+            backdrop closes it, same as the manual-copy modal below. */}
+        {navTarget && (
+          <div
+            className="absolute inset-0 z-40 flex items-end"
+            style={{ background: "#241623CC" }}
+            onClick={() => setNavTarget(null)}
+          >
+            <div
+              className="w-full p-4"
+              style={{ background: "#FBF3E6", borderTopLeftRadius: "1.25rem", borderTopRightRadius: "1.25rem" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="w-10 h-1 rounded-full mx-auto mb-3" style={{ background: "#E3D9C8" }} />
+              <p className="font-bold text-center" style={{ color: "#241623", fontSize: "0.8125rem" }}>
+                ניווט אל
+              </p>
+              <p className="text-center mb-3" style={{ color: "#8A7B84", fontSize: "0.6875rem" }}>
+                {navTarget.name}
+              </p>
+
+              <a
+                href={mapsUrl(navTarget)}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setNavTarget(null)}
+                className="flex items-center gap-3 w-full rounded-xl px-4 py-3 mb-2"
+                style={{ background: "#FFFFFF", boxShadow: "0 1px 3px rgba(36,22,35,0.08)" }}
+              >
+                <MapPin size={18} color="#C81D3E" className="flex-shrink-0" />
+                <span className="font-bold" style={{ color: "#241623", fontSize: "0.875rem" }}>Google Maps</span>
+              </a>
+
+              <a
+                href={wazeUrl(navTarget)}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setNavTarget(null)}
+                className="flex items-center gap-3 w-full rounded-xl px-4 py-3"
+                style={{ background: "#FFFFFF", boxShadow: "0 1px 3px rgba(36,22,35,0.08)" }}
+              >
+                <Navigation size={18} color="#33CCFF" className="flex-shrink-0" />
+                <span className="font-bold" style={{ color: "#241623", fontSize: "0.875rem" }}>Waze</span>
+              </a>
+
+              <button
+                onClick={() => setNavTarget(null)}
+                className="w-full mt-3 py-2.5 rounded-xl font-bold"
+                style={{ background: "#F3ECDF", color: "#6B5B63", fontSize: "0.8125rem" }}
+              >
+                ביטול
+              </button>
+            </div>
           </div>
         )}
 
