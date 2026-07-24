@@ -1319,9 +1319,31 @@ export default function App() {
                 {/* ===== מקטע 3 - אודותיי ===== */}
                 <div ref={aboutMeRef} className="flex flex-col gap-5">
                   <div className="rounded-xl p-4" style={{ background: "#241623" }}>
-                    <p className="leading-relaxed" style={{ color: "#EDE3D0", fontSize: "0.8125rem" }}>
-                      חבריי, חברותיי וכל קהילת הרוקדים באי פסטיבל אשדודאנס שלום!
-                    </p>
+                    {/* Greeting is broken into two explicit lines so the portrait
+                        has a clean block to sit beside. The photo keeps a fixed px
+                        size (it deliberately does not grow with the enlarged-text
+                        setting) so it never squeezes the text column; at that size
+                        line 1 may take an extra line and the row just gets taller. */}
+                    <div className="flex items-start gap-3">
+                      <p className="leading-relaxed flex-1 min-w-0" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
+                        חבריי, חברותיי וכל קהילת הרוקדים
+                        <br />
+                        באי פסטיבל אשדודאנס שלום!
+                      </p>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src="/images/eli-profile.jpg"
+                        alt="אלי שבמנאו"
+                        className="flex-shrink-0"
+                        style={{
+                          width: "76px",
+                          height: "76px",
+                          borderRadius: "50%",
+                          objectFit: "cover",
+                          border: "2px solid #E8A93D",
+                        }}
+                      />
+                    </div>
                     <p className="leading-relaxed mt-3" style={{ color: "#EDE3D0", fontSize: "0.75rem" }}>
                       בהיותי אשדודי גאה, שמאוד אוהב לרקוד בכלל וריקודי עם בפרט, מאז שחזרתי לרחבה אני מקפיד להגיע לפסטיבל אשדודאנס ולהשתתף בכמה שיותר אירועים המתקיימים במסגרת הפסטיבל.
                     </p>
